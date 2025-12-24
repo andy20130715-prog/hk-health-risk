@@ -101,7 +101,7 @@ if __name__ == "__main__":
     print("🚀 開始執行健康風險評估...")
     
     aqhi_data = get_aqhi_from_rss()
-    if not aqhi_
+    if not aqhi_data:
         print("❌ 無法取得 AQHI 數據")
         sys.exit(1)
     print(f"✅ 成功取得 {len(aqhi_data)} 個區域的 AQHI")
@@ -129,3 +129,4 @@ if __name__ == "__main__":
     df.to_csv('risk_map.csv', index=False, encoding='utf-8')
     print(f"✅ risk_map.csv 已生成（{len(df)} 區）")
     print(df[['district', 'risk_level']].to_string(index=False))
+
