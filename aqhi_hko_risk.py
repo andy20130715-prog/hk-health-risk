@@ -3,7 +3,6 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 from datetime import datetime
 import sys
-import re
 
 def safe_float(value):
     try:
@@ -11,7 +10,6 @@ def safe_float(value):
     except:
         return None
 
-# === 監測站 → 18 區中文 ===
 STATION_TO_DISTRICT = {
     'Central/Western': '中西區',
     'Southern': '南區',
@@ -27,9 +25,7 @@ STATION_TO_DISTRICT = {
     'Tai Po': '大埔區',
     'Sha Tin': '沙田區',
     'North': '北區',
-    'Tap Mun': '大埔區',  # Tap Mun 歸入大埔
-    # 注意：黃大仙、九龍城、灣仔、油尖旺、南區已有
-    # 灣仔需用 Causeway Bay？但它是路邊站 → 暫不處理
+    'Tap Mun': '大埔區',
 }
 
 def get_aqhi_from_rss():
@@ -39,42 +35,45 @@ def get_aqhi_from_rss():
         r.raise_for_status()
         r.encoding = 'utf-8'
         
-        root = ET.fromstring(r.content)
-        namespaces = {'ns': 'http://www.w3.org/2005/Atom'}
+        # 移除命名空間干擾
+        xml_text = r.text.replace('xmlns=', 'ns=')
+        root = ET.fromstring(xml_text)
         
         aqhi_dict = {}
+        entries = root.findall('.//entry')
         
-        for entry in root.findall('ns:entry', namespaces):
-            title_elem = entry.find('ns:title', namespaces)
-            content_elem = entry.find('ns:content', namespaces)
-            
-            if title_elem is None or content_elem is None:
+        for entry in entries:
+            title = entry.find('title')
+            content = entry.find('content')
+            if title is None or content is None:
                 continue
                 
-            station_name = title_elem.text.strip()
-            content_text = content_elem.text.strip()
+            station_name = title.text.strip()
+            content_text = content.text.strip()
             
-            # 跳過路邊站
             if 'Roadside Stations' in content_text:
                 continue
                 
-            # 從內容提取數字，例如 "5 Moderate"
-            # 使用正則表達式找開頭的數字
-            match = re.search(r':\s*(\d+)', content_text)
-            if match:
-                aqhi = safe_float(match.group(1))
-                if aqhi is not None:
-                    district = STATION_TO_DISTRICT.get(station_name, station_name)
-                    aqhi_dict[district] = aqhi
-            else:
-                print(f"⚠️ 無法解析 AQHI: {content_text}")
-                
+            parts = content_text.split(':', 1)
+            if len(parts) == 2:
+                value_part = parts[1].strip()
+                num_str = ""
+                for char in value_part:
+                    if char.isdigit():
+                        num_str += char
+                    else:
+                        break
+                if num_str:
+                    aqhi = safe_float(num_str)
+                    if aqhi is not None:
+                        district = STATION_TO_DISTRICT.get(station_name, station_name)
+                        aqhi_dict[district] = aqhi
+        print(f"🔍 解析到 {len(aqhi_dict)} 個區域: {list(aqhi_dict.keys())}")
         return aqhi_dict
     except Exception as e:
-        print(f"❌ RSS 抓取錯誤: {e}")
+        print(f"❌ RSS 錯誤: {e}")
         return {}
 
-# === 溫度（保持不變）===
 def get_hko_temperature():
     try:
         df = pd.read_csv(
@@ -96,16 +95,13 @@ def get_hko_temperature():
         print(f"⚠️ 溫度錯誤: {e}")
         return None
 
-# === 主程式 ===
 if __name__ == "__main__":
     print("🚀 開始執行健康風險評估...")
-    
     aqhi_data = get_aqhi_from_rss()
-    if not aqhi_data:
+    if not aqhi_
         print("❌ 無法取得 AQHI 數據")
         sys.exit(1)
     print(f"✅ 成功取得 {len(aqhi_data)} 個區域的 AQHI")
-    print("數據預覽:", list(aqhi_data.items())[:3])
     
     current_temp = get_hko_temperature()
     print(f"🌡️ 全港即時溫度: {current_temp}°C")
@@ -129,4 +125,3 @@ if __name__ == "__main__":
     df.to_csv('risk_map.csv', index=False, encoding='utf-8')
     print(f"✅ risk_map.csv 已生成（{len(df)} 區）")
     print(df[['district', 'risk_level']].to_string(index=False))
-
