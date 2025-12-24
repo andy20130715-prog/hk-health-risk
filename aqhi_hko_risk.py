@@ -3,6 +3,7 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 from datetime import datetime
 import sys
+import re
 
 def safe_float(value):
     try:
@@ -10,7 +11,27 @@ def safe_float(value):
     except:
         return None
 
-# === 從香港政府 RSS 抓取 18 區 AQHI ===
+# === 監測站 → 18 區中文 ===
+STATION_TO_DISTRICT = {
+    'Central/Western': '中西區',
+    'Southern': '南區',
+    'Eastern': '東區',
+    'Kwun Tong': '觀塘區',
+    'Sham Shui Po': '深水埗區',
+    'Kwai Chung': '葵青區',
+    'Tsuen Wan': '荃灣區',
+    'Tseung Kwan O': '西貢區',
+    'Yuen Long': '元朗區',
+    'Tuen Mun': '屯門區',
+    'Tung Chung': '離島區',
+    'Tai Po': '大埔區',
+    'Sha Tin': '沙田區',
+    'North': '北區',
+    'Tap Mun': '大埔區',  # Tap Mun 歸入大埔
+    # 注意：黃大仙、九龍城、灣仔、油尖旺、南區已有
+    # 灣仔需用 Causeway Bay？但它是路邊站 → 暫不處理
+}
+
 def get_aqhi_from_rss():
     try:
         url = "https://www.aqhi.gov.hk/epd/ddata/html/out/aqhi_ind_rss_Eng.xml"
@@ -18,32 +39,42 @@ def get_aqhi_from_rss():
         r.raise_for_status()
         r.encoding = 'utf-8'
         
-        # 解析 XML
         root = ET.fromstring(r.content)
         namespaces = {'ns': 'http://www.w3.org/2005/Atom'}
         
         aqhi_dict = {}
         
-        # 找出所有 <entry>（每個 entry 是一個區域）
         for entry in root.findall('ns:entry', namespaces):
-            title = entry.find('ns:title', namespaces)
-            content = entry.find('ns:content', namespaces)
+            title_elem = entry.find('ns:title', namespaces)
+            content_elem = entry.find('ns:content', namespaces)
             
-            if title is not None and content is not None:
-                # title 格式: "Central and Western: 3"
-                title_text = title.text.strip()
-                if ':' in title_text:
-                    eng_district, aqhi_str = title_text.split(':', 1)
-                    eng_district = eng_district.strip()
-                    aqhi = safe_float(aqhi_str.strip())
-                    if aqhi is not None:
-                        aqhi_dict[eng_district] = aqhi
+            if title_elem is None or content_elem is None:
+                continue
+                
+            station_name = title_elem.text.strip()
+            content_text = content_elem.text.strip()
+            
+            # 跳過路邊站
+            if 'Roadside Stations' in content_text:
+                continue
+                
+            # 從內容提取數字，例如 "5 Moderate"
+            # 使用正則表達式找開頭的數字
+            match = re.search(r':\s*(\d+)', content_text)
+            if match:
+                aqhi = safe_float(match.group(1))
+                if aqhi is not None:
+                    district = STATION_TO_DISTRICT.get(station_name, station_name)
+                    aqhi_dict[district] = aqhi
+            else:
+                print(f"⚠️ 無法解析 AQHI: {content_text}")
+                
         return aqhi_dict
     except Exception as e:
-        print(f"❌ RSS 解析錯誤: {e}")
+        print(f"❌ RSS 抓取錯誤: {e}")
         return {}
 
-# === 從 HKO 抓取溫度（全港平均）===
+# === 溫度（保持不變）===
 def get_hko_temperature():
     try:
         df = pd.read_csv(
@@ -62,58 +93,31 @@ def get_hko_temperature():
                 break
         return sum(temps) / len(temps) if temps else None
     except Exception as e:
-        print(f"⚠️ 溫度數據可選性錯誤: {e}")
+        print(f"⚠️ 溫度錯誤: {e}")
         return None
-
-# === 英文區 → 中文區 ===
-ENG_TO_CHI = {
-    'Central and Western': '中西區',
-    'Wan Chai': '灣仔區',
-    'Eastern': '東區',
-    'Kowloon City': '九龍城區',
-    'Kwun Tong': '觀塘區',
-    'Sham Shui Po': '深水埗區',
-    'Yau Tsim Mong': '油尖旺區',
-    'Wong Tai Sin': '黃大仙區',
-    'Kwai Tsing': '葵青區',
-    'Tsuen Wan': '荃灣區',
-    'Tuen Mun': '屯門區',
-    'North': '北區',
-    'Yuen Long': '元朗區',
-    'Tai Po': '大埔區',
-    'Sha Tin': '沙田區',
-    'Sai Kung': '西貢區',
-    'Islands': '離島區',
-    'Southern': '南區',
-}
 
 # === 主程式 ===
 if __name__ == "__main__":
     print("🚀 開始執行健康風險評估...")
     
-    # 1. 抓 AQHI
     aqhi_data = get_aqhi_from_rss()
-    if not aqhi_data:
-        print("❌ 無法從 RSS 取得 AQHI 數據")
+    if not aqhi_
+        print("❌ 無法取得 AQHI 數據")
         sys.exit(1)
-    print(f"✅ 成功取得 {len(aqhi_data)} 個區的 AQHI")
+    print(f"✅ 成功取得 {len(aqhi_data)} 個區域的 AQHI")
+    print("數據預覽:", list(aqhi_data.items())[:3])
     
-    # 2. 抓溫度
     current_temp = get_hko_temperature()
     print(f"🌡️ 全港即時溫度: {current_temp}°C")
     
-    # 3. 計算風險
     results = []
-    for eng_district, aqhi in aqhi_data.items():
-        chi_district = ENG_TO_CHI.get(eng_district, eng_district)
-        
+    for district, aqhi in aqhi_data.items():
         risk = aqhi * 0.7
         if current_temp is not None and current_temp < 16:
             risk += (16 - current_temp) * 0.3
         risk = min(risk, 10.0)
-        
         results.append({
-            'district': chi_district,
+            'district': district,
             'aqhi': round(aqhi, 1),
             'temperature': round(current_temp, 1) if current_temp else None,
             'risk_score': round(risk, 2),
@@ -121,9 +125,7 @@ if __name__ == "__main__":
             'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M')
         })
     
-    # 4. 輸出 CSV
     df = pd.DataFrame(results)
     df.to_csv('risk_map.csv', index=False, encoding='utf-8')
     print(f"✅ risk_map.csv 已生成（{len(df)} 區）")
     print(df[['district', 'risk_level']].to_string(index=False))
-
