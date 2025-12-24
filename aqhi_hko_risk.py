@@ -1,7 +1,8 @@
- import requests
+import requests
 import pandas as pd
 import xml.etree.ElementTree as ET
 from datetime import datetime
+import sys
 
 # === 監測站 → 18 區對應表 ===
 station_to_district = {
@@ -29,39 +30,59 @@ station_to_district = {
     'Tai Mei Tuk': '大埔區',
 }
 
+def safe_float(value):
+    try:
+        return float(value)
+    except:
+        return None
+
 # === 抓 AQHI ===
 def get_aqhi():
     try:
-        r = requests.get("https://aqhi.gov.hk/en/aqhi/past-24-hours.xml")
+        r = requests.get("https://aqhi.gov.hk/en/aqhi/past-24-hours.xml", timeout=10)
+        r.raise_for_status()
         root = ET.fromstring(r.content)
         aqhi_dict = {}
         for station in root.findall('.//station'):
-            name = station.find('name').text
-            val = station.find('aqhi').text
-            if val and val.replace('.','',1).isdigit():
-                aqhi_dict[name] = float(val)
+            name_elem = station.find('name')
+            aqhi_elem = station.find('aqhi')
+            if name_elem is not None and aqhi_elem is not None:
+                name = name_elem.text.strip()
+                val = safe_float(aqhi_elem.text)
+                if val is not None:
+                    aqhi_dict[name] = val
         return aqhi_dict
-    except:
+    except Exception as e:
+        print(f"AQHI error: {e}")
         return {}
 
 # === 抓溫度 ===
 def get_temp():
     try:
-        df = pd.read_csv("https://data.weather.gov.hk/weatherAPI/hko_data/regional-weather/latest_1min_temperature_uc.csv")
+        df = pd.read_csv(
+            "https://data.weather.gov.hk/weatherAPI/hko_data/regional-weather/latest_1min_temperature_uc.csv",
+            timeout=10
+        )
         temp_dict = {}
         for _, row in df.iterrows():
-            name = row['Automatic Weather Station']
-            temp = row['Air Temperature (°C)']
-            if pd.notna(temp):
-                temp_dict[name] = float(temp)
+            name = row.get('Automatic Weather Station', 'Unknown')
+            temp = safe_float(row.get('Air Temperature (°C)', None))
+            if temp is not None:
+                temp_dict[name] = temp
         return temp_dict
-    except:
+    except Exception as e:
+        print(f"Temperature error: {e}")
         return {}
 
 # === 主程式 ===
 if __name__ == "__main__":
+    print("開始抓取 AQHI 與溫度...")
     aqhi_data = get_aqhi()
     temp_data = get_temp()
+    
+    if not aqhi_data and not temp_data:
+        print("❌ 無法取得任何數據，終止執行。")
+        sys.exit(1)
     
     results = []
     all_stations = set(list(aqhi_data.keys()) + list(temp_data.keys()))
@@ -71,14 +92,12 @@ if __name__ == "__main__":
         aqhi = aqhi_data.get(station, None)
         temp = temp_data.get(station, None)
         
-        # 風險公式（可調整）
         risk = 0
         if aqhi is not None:
             risk += aqhi * 0.6
         if temp is not None and temp < 16:
             risk += (16 - temp) * 0.4
-        
-        risk = min(risk, 10)  # 最高 10 分
+        risk = min(risk, 10)
         
         results.append({
             'district': district,
@@ -87,8 +106,11 @@ if __name__ == "__main__":
             'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M')
         })
     
-    # 按區取最高風險
     df = pd.DataFrame(results)
+    if df.empty:
+        print("❌ 無有效數據，不生成 CSV。")
+        sys.exit(1)
+    
     df_agg = df.sort_values('risk_score', ascending=False).drop_duplicates('district')
     df_agg.to_csv('risk_map.csv', index=False, encoding='utf-8')
-    print("✅ risk_map.csv 已生成")
+    print(f"✅ 成功生成 risk_map.csv（共 {len(df_agg)} 區）")
