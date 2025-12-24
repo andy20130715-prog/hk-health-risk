@@ -1,34 +1,7 @@
 import requests
 import pandas as pd
-import xml.etree.ElementTree as ET
 from datetime import datetime
 import sys
-
-# === 監測站 → 18 區對應表 ===
-station_to_district = {
-    'Central': '中西區',
-    'Wan Chai': '灣仔區',
-    'Causeway Bay': '灣仔區',
-    'Eastern': '東區',
-    'North Point': '東區',
-    'Kwun Tong': '觀塘區',
-    'Sham Shui Po': '深水埗區',
-    'Kwai Chung': '葵青區',
-    'Tsuen Wan': '荃灣區',
-    'Tuen Mun': '屯門區',
-    'Tung Chung': '離島區',
-    'Tai Po': '大埔區',
-    'Sha Tin': '沙田區',
-    'Yuen Long': '元朗區',
-    'Hong Kong Observatory': '油尖旺區',
-    'King\'s Park': '九龍城區',
-    'Wong Chuk Hang': '南區',
-    'Sai Kung': '西貢區',
-    'Tseung Kwan O': '西貢區',
-    'Cheung Chau': '離島區',
-    'Lau Fau Shan': '元朗區',
-    'Tai Mei Tuk': '大埔區',
-}
 
 def safe_float(value):
     try:
@@ -36,81 +9,112 @@ def safe_float(value):
     except:
         return None
 
-# === 抓 AQHI ===
-def get_aqhi():
+# === 從 data.gov.hk 獲取 18 區 AQHI ===
+def get_aqhi_district():
     try:
-        r = requests.get("https://aqhi.gov.hk/en/aqhi/past-24-hours.xml", timeout=10)
+        url = "https://api.data.gov.hk/v2/aggregate/hk-epd-airteam-air-quality-data-air-quality-health-index-district?lang=en"
+        r = requests.get(url, timeout=10)
         r.raise_for_status()
-        root = ET.fromstring(r.content)
+        data = r.json()
+        if not data:
+            print("❌ AQHI 數據為空")
+            return {}
+        
+        latest = data[-1]  # 最新記錄
         aqhi_dict = {}
-        for station in root.findall('.//station'):
-            name_elem = station.find('name')
-            aqhi_elem = station.find('aqhi')
-            if name_elem is not None and aqhi_elem is not None:
-                name = name_elem.text.strip()
-                val = safe_float(aqhi_elem.text)
-                if val is not None:
-                    aqhi_dict[name] = val
+        for eng_name, record in latest.items():
+            if isinstance(record, dict) and 'INDEX' in record:
+                aqhi = safe_float(record['INDEX'])
+                if aqhi is not None:
+                    aqhi_dict[eng_name] = aqhi
         return aqhi_dict
     except Exception as e:
-        print(f"AQHI error: {e}")
+        print(f"❌ AQHI API 錯誤: {e}")
         return {}
 
-# === 抓溫度 ===
-def get_temp():
+# === 從 HKO 獲取溫度（用於降溫風險）===
+def get_latest_temperature():
     try:
         df = pd.read_csv(
             "https://data.weather.gov.hk/weatherAPI/hko_data/regional-weather/latest_1min_temperature_uc.csv",
             timeout=10
         )
-        temp_dict = {}
-        for _, row in df.iterrows():
-            name = row.get('Automatic Weather Station', 'Unknown')
-            temp = safe_float(row.get('Air Temperature (°C)', None))
-            if temp is not None:
-                temp_dict[name] = temp
-        return temp_dict
+        # 計算全港平均溫度（簡化）
+        temps = []
+        for col in df.columns:
+            if 'Temperature' in col or 'temperature' in col:
+                for temp in df[col]:
+                    if pd.notna(temp):
+                        temps.append(float(temp))
+                break
+        if temps:
+            return sum(temps) / len(temps)
+        return None
     except Exception as e:
-        print(f"Temperature error: {e}")
-        return {}
+        print(f"⚠️ 溫度數據錯誤（可忽略）: {e}")
+        return None
+
+# === 英文區名 → 中文區名 ===
+ENG_TO_CHI = {
+    'Central and Western': '中西區',
+    'Wan Chai': '灣仔區',
+    'Eastern': '東區',
+    'Kowloon City': '九龍城區',
+    'Kwun Tong': '觀塘區',
+    'Sham Shui Po': '深水埗區',
+    'Yau Tsim Mong': '油尖旺區',
+    'Wong Tai Sin': '黃大仙區',
+    'Kwai Tsing': '葵青區',
+    'Tsuen Wan': '荃灣區',
+    'Tuen Mun': '屯門區',
+    'North': '北區',
+    'Yuen Long': '元朗區',
+    'Tai Po': '大埔區',
+    'Sha Tin': '沙田區',
+    'Sai Kung': '西貢區',
+    'Islands': '離島區',
+    'Southern': '南區',
+}
 
 # === 主程式 ===
 if __name__ == "__main__":
-    print("開始抓取 AQHI 與溫度...")
-    aqhi_data = get_aqhi()
-    temp_data = get_temp()
+    print("🚀 開始執行健康風險計算...")
     
-    if not aqhi_data and not temp_data:
-        print("❌ 無法取得任何數據，終止執行。")
+    # 1. 抓取 AQHI（18 區）
+    aqhi_data = get_aqhi_district()
+    if not aqhi_data:
+        print("❌ 無法取得 AQHI 數據，終止執行。")
         sys.exit(1)
+    print(f"✅ 取得 {len(aqhi_data)} 個區的 AQHI 數據")
     
+    # 2. 抓取溫度（用於降溫評估）
+    current_temp = get_latest_temperature()
+    print(f"🌡️ 全港即時平均溫度: {current_temp}°C")
+    
+    # 3. 計算風險（範例：只用 AQHI，可加溫度）
     results = []
-    all_stations = set(list(aqhi_data.keys()) + list(temp_data.keys()))
-    
-    for station in all_stations:
-        district = station_to_district.get(station, '其他')
-        aqhi = aqhi_data.get(station, None)
-        temp = temp_data.get(station, None)
+    for eng_district, aqhi in aqhi_data.items():
+        chi_district = ENG_TO_CHI.get(eng_district, eng_district)
         
-        risk = 0
-        if aqhi is not None:
-            risk += aqhi * 0.6
-        if temp is not None and temp < 16:
-            risk += (16 - temp) * 0.4
-        risk = min(risk, 10)
+        # 風險公式（可調整）
+        risk = aqhi * 0.8  # AQHI 權重 80%
+        if current_temp is not None and current_temp < 16:
+            risk += (16 - current_temp) * 0.2  # 冷天加重
+        
+        risk = min(risk, 10.0)  # 最高 10 分
         
         results.append({
-            'district': district,
+            'district': chi_district,
+            'aqhi': round(aqhi, 1),
+            'temperature': round(current_temp, 1) if current_temp else None,
             'risk_score': round(risk, 2),
             'risk_level': '高' if risk > 7 else '中' if risk > 4 else '低',
             'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M')
         })
     
+    # 4. 輸出 CSV
     df = pd.DataFrame(results)
-    if df.empty:
-        print("❌ 無有效數據，不生成 CSV。")
-        sys.exit(1)
-    
-    df_agg = df.sort_values('risk_score', ascending=False).drop_duplicates('district')
-    df_agg.to_csv('risk_map.csv', index=False, encoding='utf-8')
-    print(f"✅ 成功生成 risk_map.csv（共 {len(df_agg)} 區）")
+    df.to_csv('risk_map.csv', index=False, encoding='utf-8')
+    print(f"✅ 成功生成 risk_map.csv（共 {len(df)} 區）")
+    print("📄 檔案內容預覽:")
+    print(df[['district', 'risk_level']].to_string(index=False))
